@@ -1,0 +1,16 @@
+name: Deploy via CodeBuild Runner (PAT)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: codebuild-hello-world-runner-pat-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show egress IP
+        run: curl -s https://checkip.amazonaws.com
