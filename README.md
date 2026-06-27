@@ -10,9 +10,10 @@ For standard GitHub.com repos where CodeConnections works, see: [codebuild-githu
 
 ## Prerequisites
 
-- AWS account with CDK bootstrapped
+- AWS account with CDK bootstrapped in the target region
 - Secrets Manager secret `codebuild/github-pat` containing a classic PAT with scopes: `repo`, `admin:repo_hook`, `read:org`
 - A VPC with private subnets and NAT egress (looked up by tag `Name: *NetworkStack*`)
+- [`gh` CLI](https://cli.github.com/) authenticated (used to register the webhook on GitHub)
 
 ## Deploy
 
@@ -20,18 +21,16 @@ For standard GitHub.com repos where CodeConnections works, see: [codebuild-githu
 ./deploy.sh
 ```
 
-Or manually:
+The script runs three phases:
 
-```bash
-cd infra
-npm ci
-AWS_REGION=us-east-1 npx cdk deploy RunnerStackPat --require-approval never
-```
+1. **CDK deploy** — creates the CodeBuild project with GHE source credentials, placed in VPC private subnets. Webhook is *not* created by CDK (CodeBuild fails if you combine VPC + webhook creation in a single operation).
+2. **CodeBuild webhook** — calls `aws codebuild create-webhook --manual-creation` to get a payload URL and secret. Manual mode tells CodeBuild not to call GitHub itself (needed because CodeBuild's auto-creation doesn't work for GHE source on github.com).
+3. **GitHub webhook** — registers the payload URL on the repo via `gh api`, listening for `workflow_job` events.
 
 ## Architecture
 
-1. **RunnerStackPat** creates a CodeBuild project in your VPC (private subnets with NAT egress) with a GitHub Enterprise webhook (filter: `WORKFLOW_JOB_QUEUED`).
-2. On push to `main`, the GitHub Actions workflow triggers — GitHub sends the webhook to CodeBuild.
+1. **RunnerStackPat** creates a CodeBuild project in your VPC (private subnets with NAT egress) with a `GITHUB_ENTERPRISE` source credential (separate slot from the `GITHUB`/CodeConnections credential, so they coexist).
+2. On push to `main`, GitHub sends a `workflow_job.queued` event to the CodeBuild webhook URL.
 3. CodeBuild spins up an ARM64 runner in your AWS account and executes the workflow steps.
 
 ## Adapting for GHE data residency
@@ -45,4 +44,10 @@ source: codebuild.Source.gitHubEnterprise({
 })
 ```
 
-Everything else stays the same.
+Everything else stays the same. The runner registration uses the GHE Server API path (`https://HOSTNAME/api/v3/...`) which is correct for `.ghe.com` domains.
+
+## Deployment gotchas
+
+- **VPC + webhook creation fails together** — CodeBuild returns "Failed to create vpc connection for webhook" if you try to create both in one operation. The workaround is to deploy the project first, then add the webhook separately.
+- **Auto webhook creation fails for GHE source on github.com** — CodeBuild returns "GitHub webhook limit reached" even with 0 existing webhooks. Use `--manual-creation` and register the webhook on GitHub yourself. This is a github.com-specific issue; real GHE servers don't hit it.
+- **CDK deploys with `webhook=false` will remove an existing webhook** — that's why the deploy script creates the webhook *after* the final CDK deploy, not between deploys.
