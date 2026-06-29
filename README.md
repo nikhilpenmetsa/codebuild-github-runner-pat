@@ -31,7 +31,7 @@ The script runs three phases:
 
 1. **RunnerStackPat** creates a CodeBuild project in your VPC (private subnets with NAT egress) with a `GITHUB_ENTERPRISE` source credential (separate slot from the `GITHUB`/CodeConnections credential, so they coexist).
 2. On push to `main`, GitHub sends a `workflow_job.queued` event to the CodeBuild webhook URL.
-3. CodeBuild spins up an ARM64 runner in your AWS account and executes the workflow steps.
+3. CodeBuild spins up an ephemeral runner in your AWS account and executes the workflow steps.
 
 ## Adapting for GHE data residency
 
@@ -44,10 +44,14 @@ source: codebuild.Source.gitHubEnterprise({
 })
 ```
 
-Everything else stays the same. The runner registration uses the GHE Server API path (`https://HOSTNAME/api/v3/...`) which is correct for `.ghe.com` domains.
+Additionally:
+
+- The PAT must be issued from the GHE instance (not github.com)
+- The `gh api` webhook registration in `deploy.sh` needs `--hostname your-org.ghe.com`
+
+The runner registration uses the GHE Server API path (`https://HOSTNAME/api/v3/...`) which is correct for `.ghe.com` domains.
 
 ## Deployment gotchas
 
-- **VPC + webhook creation fails together** — CodeBuild returns "Failed to create vpc connection for webhook" when creating a project with both VPC and webhook in one operation. Unknown whether this also affects real GHE servers.
-- **Auto webhook creation fails for GHE source on github.com** — without VPC, CodeBuild returns "GitHub webhook limit reached" even with 0 existing webhooks. Use `--manual-creation` and register the webhook on GitHub yourself. Real GHE servers may not hit this.
+- **Webhook auto-creation fails for `GITHUB_ENTERPRISE` source on github.com** — CDK's `webhook: true` triggers CloudFormation to call `CreateWebhook`, which fails with different errors depending on whether VPC is attached ("Failed to create vpc connection for webhook") or not ("GitHub webhook limit reached" with 0 existing webhooks). The workaround is `--manual-creation` via CLI, then registering the webhook on GitHub yourself. Real `.ghe.com` servers may not hit this.
 - **CDK deploys with `webhook=false` will remove an existing webhook** — that's why the deploy script creates the webhook *after* the final CDK deploy, not between deploys.
